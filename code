@@ -1,0 +1,1267 @@
+"""
+SCDS – Student Clinical Database System
+Technological Institute of the Philippines
+"""
+from __future__ import annotations
+import os, sys
+import pymysql
+import pymysql.cursors
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.units import mm
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+    HRFlowable, Image as RLImage
+)
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QLineEdit, QPushButton, QFrame, QListWidget, QListWidgetItem,
+    QMessageBox, QStackedWidget, QScrollArea, QComboBox, QTextEdit,
+    QDialog, QDialogButtonBox, QDateEdit, QTabWidget, QTableWidget,
+    QTableWidgetItem, QHeaderView, QSizePolicy, QGroupBox, QFormLayout
+)
+from PyQt6.QtCore import Qt, QTimer, QDateTime, QDate, QSize
+from PyQt6.QtGui import QFont, QPixmap, QColor
+
+TIP_BLUE  = "#003087"
+TIP_GOLD  = "#FDB913"
+TIP_DARK  = "#1A1A2E"
+TIP_LIGHT = "#F4F6FA"
+TIP_WHITE = "#FFFFFF"
+TIP_BORD  = "#D0D7E3"
+TIP_MUTED = "#6C7A99"
+TIP_GREEN = "#1A7C4F"
+TIP_RED   = "#C0392B"
+
+LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tip_logo.png")
+
+# DATABASE CONFIG
+DB_CONFIG = dict(
+    host     = "localhost",
+    port     = 3306,
+    db       = "scds_db",      
+    user     = "root",
+    password = "",            
+)
+
+class SQLDBConnector:
+    """MySQL connector following the Activity 15 SQLDBConnector pattern."""
+
+    def __init__(self, db="", username="", password="", host="", port=3306):
+        self.db       = db
+        self.username = username
+        self.password = password
+        self.host     = host
+        self.port     = port
+
+    def _connect(self):
+        return pymysql.connect(
+            host=self.host, port=self.port,
+            db=self.db, user=self.username, password=self.password,
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=False
+        )
+
+    def executequery(self, sql="", parameters=()):
+        try:
+            conn   = self._connect()
+            cursor = conn.cursor()
+            cursor.execute(sql, parameters)
+            result = cursor.fetchall()
+            conn.close()
+            return result
+        except pymysql.MySQLError as e:
+            print(e); sys.exit()
+
+    def executecommit(self, sql="", parameters=()):
+        """For INSERT / UPDATE / DELETE — commits the transaction."""
+        try:
+            conn   = self._connect()
+            cursor = conn.cursor()
+            cursor.execute(sql, parameters)
+            conn.commit()
+            last_id = cursor.lastrowid
+            conn.close()
+            return last_id
+        except pymysql.MySQLError as e:
+            print(e); sys.exit()
+
+    def callprocedure(self, procname="", parameters=()):
+        try:
+            conn   = self._connect()
+            cursor = conn.cursor()
+            cursor.callproc(procname, parameters)
+            result = cursor.fetchall()
+            conn.close()
+            return result
+        except pymysql.MySQLError as e:
+            print(e); sys.exit()
+
+
+def _db():
+    return SQLDBConnector(
+        db       = DB_CONFIG["db"],
+        username = DB_CONFIG["user"],
+        password = DB_CONFIG["password"],
+        host     = DB_CONFIG["host"],
+        port     = DB_CONFIG["port"],
+    )
+
+# SCHEMA INIT 
+def init_db():
+    try:
+        conn = pymysql.connect(
+            host=DB_CONFIG["host"], port=DB_CONFIG["port"],
+            user=DB_CONFIG["user"], password=DB_CONFIG["password"],
+            autocommit=True
+        )
+        cur = conn.cursor()
+        cur.execute(f"CREATE DATABASE IF NOT EXISTS `{DB_CONFIG['db']}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+        conn.select_db(DB_CONFIG["db"])
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id        INT AUTO_INCREMENT PRIMARY KEY,
+                username  VARCHAR(50) UNIQUE NOT NULL,
+                password  VARCHAR(100) NOT NULL,
+                role      ENUM('Admin','Staff','Nurse') NOT NULL,
+                full_name VARCHAR(100)
+            ) ENGINE=InnoDB
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS students (
+                student_id        VARCHAR(10) PRIMARY KEY,
+                full_name         VARCHAR(100) NOT NULL,
+                course            VARCHAR(20),
+                year_level        VARCHAR(20),
+                date_of_birth     VARCHAR(10),
+                contact_no        VARCHAR(20),
+                address           VARCHAR(200),
+                emergency_contact VARCHAR(100),
+                blood_type        VARCHAR(5),
+                known_allergies   VARCHAR(200)
+            ) ENGINE=InnoDB
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS consultations (
+                id              INT AUTO_INCREMENT PRIMARY KEY,
+                student_id      VARCHAR(10) NOT NULL,
+                date_of_visit   VARCHAR(10) NOT NULL,
+                chief_complaint VARCHAR(200),
+                diagnosis       VARCHAR(200),
+                treatment       VARCHAR(300),
+                prescribed_meds VARCHAR(300),
+                nurse_notes     TEXT,
+                nurse_on_duty   VARCHAR(100),
+                follow_up_date  VARCHAR(10),
+                FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE
+            ) ENGINE=InnoDB
+        """)
+
+        cur.execute("SELECT COUNT(*) AS cnt FROM users")
+        if cur.fetchone()[0] == 0:
+            cur.executemany(
+                "INSERT INTO users (username,password,role,full_name) VALUES (%s,%s,%s,%s)",
+                [
+                    ("admin",  "admin123", "Admin", "System Administrator"),
+                    ("staff1", "staff123", "Staff", "Maria Santos"),
+                    ("nurse1", "nurse123", "Nurse", "Ana Reyes"),
+                ]
+            )
+
+        # Seed students
+        cur.execute("SELECT COUNT(*) AS cnt FROM students")
+        if cur.fetchone()[0] == 0:
+            cur.executemany(
+                "INSERT INTO students VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                [
+                    ("2412089","Andrew Jermaine C. Narag.","BSCpE","2nd Year","2002-05-14","09171234567","Cainta Rizal","Rhea Narag/ 09189876543","O+","None"),
+                    ("2412090","Santos, Angela R.","BSCS","2nd Year","2003-08-22","09281234567","Caloocan","Pedro Santos / 09289876543","A+","Penicillin"),
+                    ("2412091","Reyes, Mark J.","BSEE","4th Year","2001-11-03","09171112222","Manila","Lina Reyes / 09171113333","B+","Aspirin"),
+                    ("2412092","Garcia, Patricia L.","BSME","1st Year","2004-03-17","09351234567","Pasig","Jose Garcia / 09359876543","AB+","None"),
+                ]
+            )
+            cur.executemany(
+                """INSERT INTO consultations
+                   (student_id,date_of_visit,chief_complaint,diagnosis,treatment,
+                    prescribed_meds,nurse_notes,nurse_on_duty,follow_up_date)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                [
+                    ("2412089","2024-09-10","Headache and fever","Viral URTI","Rest, increase fluid intake","Paracetamol 500mg TID x3 days","Temp 38.2C on arrival. Advised to rest.","Nurse Ana Reyes","2024-09-13"),
+                    ("2412090","2024-10-05","Stomach pain","Gastroenteritis","Oral rehydration","Loperamide 2mg PRN","Student was pale on arrival.","Nurse Ana Reyes",""),
+                    ("2412091","2024-11-20","Sprained ankle","Grade 1 ankle sprain","RICE method","Mefenamic Acid 500mg TID","Referred from PE class.","Nurse Ana Reyes","2024-11-27"),
+                ]
+            )
+        conn.close()
+    except pymysql.MySQLError as e:
+        print(f"[SCDS] Database init error: {e}")
+        sys.exit(1)
+
+def db_auth(u, p):
+    rows = _db().executequery(
+        "SELECT * FROM users WHERE username=%s AND password=%s", (u, p)
+    )
+    return rows[0] if rows else None
+
+def db_users():
+    return _db().executequery("SELECT * FROM users ORDER BY role, username")
+
+def db_add_user(un, pw, role, fn):
+    try:
+        conn = pymysql.connect(**{k: DB_CONFIG[k] for k in ("host","port","user","password","db")},
+                               autocommit=False)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (username,password,role,full_name) VALUES (%s,%s,%s,%s)",
+            (un, pw, role, fn)
+        )
+        conn.commit(); conn.close(); return True
+    except pymysql.IntegrityError:
+        return False
+    except pymysql.MySQLError as e:
+        print(e); return False
+
+def db_del_user(uid):
+    _db().executecommit("DELETE FROM users WHERE id=%s", (uid,))
+
+def db_students():
+    return _db().executequery("SELECT * FROM students ORDER BY full_name")
+
+def db_save_student(s):
+    _db().executecommit(
+        """INSERT INTO students VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+           ON DUPLICATE KEY UPDATE
+               full_name=%s, course=%s, year_level=%s, date_of_birth=%s,
+               contact_no=%s, address=%s, emergency_contact=%s,
+               blood_type=%s, known_allergies=%s""",
+        (
+            s["student_id"], s["full_name"], s.get("course",""), s.get("year_level",""),
+            s.get("date_of_birth",""), s.get("contact_no",""), s.get("address",""),
+            s.get("emergency_contact",""), s.get("blood_type",""), s.get("known_allergies",""),
+            # UPDATE values
+            s["full_name"], s.get("course",""), s.get("year_level",""),
+            s.get("date_of_birth",""), s.get("contact_no",""), s.get("address",""),
+            s.get("emergency_contact",""), s.get("blood_type",""), s.get("known_allergies",""),
+        )
+    )
+
+def db_del_student(sid):
+    _db().executecommit("DELETE FROM students WHERE student_id=%s", (sid,))
+
+def db_consultations(sid):
+    return _db().executequery(
+        "SELECT * FROM consultations WHERE student_id=%s ORDER BY date_of_visit DESC", (sid,)
+    )
+
+def db_save_consult(con):
+    db = _db()
+    if con.get("id"):
+        db.executecommit(
+            """UPDATE consultations SET date_of_visit=%s, chief_complaint=%s, diagnosis=%s,
+               treatment=%s, prescribed_meds=%s, nurse_notes=%s, nurse_on_duty=%s,
+               follow_up_date=%s WHERE id=%s""",
+            (con["date_of_visit"], con["chief_complaint"], con["diagnosis"], con["treatment"],
+             con["prescribed_meds"], con["nurse_notes"], con["nurse_on_duty"],
+             con["follow_up_date"], con["id"])
+        )
+    else:
+        db.executecommit(
+            """INSERT INTO consultations
+               (student_id,date_of_visit,chief_complaint,diagnosis,treatment,
+                prescribed_meds,nurse_notes,nurse_on_duty,follow_up_date)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (con["student_id"], con["date_of_visit"], con["chief_complaint"], con["diagnosis"],
+             con["treatment"], con["prescribed_meds"], con["nurse_notes"],
+             con["nurse_on_duty"], con["follow_up_date"])
+        )
+
+def db_del_consult(cid):
+    _db().executecommit("DELETE FROM consultations WHERE id=%s", (cid,))
+
+def db_report():
+    db = _db()
+    ts        = db.executequery("SELECT COUNT(*) AS cnt FROM students")[0]["cnt"]
+    tc        = db.executequery("SELECT COUNT(*) AS cnt FROM consultations")[0]["cnt"]
+    blood     = db.executequery("SELECT blood_type, COUNT(*) cnt FROM students GROUP BY blood_type ORDER BY cnt DESC")
+    complaints= db.executequery("""SELECT chief_complaint, COUNT(*) cnt FROM consultations
+                                   WHERE chief_complaint != '' GROUP BY chief_complaint
+                                   ORDER BY cnt DESC LIMIT 10""")
+    allergies = db.executequery("""SELECT known_allergies, COUNT(*) cnt FROM students
+                                   WHERE known_allergies != '' AND LOWER(known_allergies) != 'none'
+                                   GROUP BY known_allergies ORDER BY cnt DESC""")
+    courses   = db.executequery("SELECT course, COUNT(*) cnt FROM students GROUP BY course ORDER BY cnt DESC")
+    recent    = db.executequery("""SELECT s.full_name, s.student_id, c.date_of_visit, c.chief_complaint
+                                   FROM consultations c JOIN students s ON s.student_id = c.student_id
+                                   ORDER BY c.date_of_visit DESC LIMIT 20""")
+    return dict(ts=ts, tc=tc, blood=blood, complaints=complaints,
+                allergies=allergies, courses=courses, recent=recent)
+
+# PDF FORMATTING
+def _pdf_colors():
+    return dict(
+        BORD = colors.HexColor("#D0D7E3"),
+        BLU  = colors.HexColor(TIP_BLUE),
+        GOLD = colors.HexColor(TIP_GOLD),
+        LITE = colors.HexColor(TIP_LIGHT),
+        MUTE = colors.HexColor(TIP_MUTED),
+        RED  = colors.HexColor(TIP_RED),
+        GRN  = colors.HexColor(TIP_GREEN),
+        DARK = colors.HexColor(TIP_DARK),
+    )
+
+def _pdf_styles(C):
+    S = getSampleStyleSheet()
+    def sty(name, **kw):
+        return ParagraphStyle(name, parent=S["Normal"], **kw)
+    return dict(
+        TITLE = sty("T",  fontName="Helvetica-Bold", fontSize=16, textColor=C["BLU"],  alignment=TA_CENTER, spaceAfter=2),
+        SUB   = sty("S",  fontName="Helvetica",       fontSize=9,  textColor=C["MUTE"], alignment=TA_CENTER, spaceAfter=2),
+        SEC   = sty("H",  fontName="Helvetica-Bold",  fontSize=11, textColor=C["BLU"],  spaceBefore=10, spaceAfter=4),
+        SMALL = sty("Sm", fontName="Helvetica",       fontSize=8,  textColor=C["MUTE"]),
+        BODY  = sty("B",  fontName="Helvetica",       fontSize=9,  textColor=C["DARK"]),
+        BOLD  = sty("Bd", fontName="Helvetica-Bold",  fontSize=9,  textColor=C["DARK"]),
+        FOOT  = sty("Ft", fontName="Helvetica",       fontSize=7,  textColor=C["MUTE"], alignment=TA_CENTER),
+        BADGE = sty("Bg", fontName="Helvetica-Bold",  fontSize=22, textColor=C["BLU"],  alignment=TA_CENTER),
+    )
+
+def _tbl_style(hdr_color, alt, BORD):
+    return TableStyle([
+        ("BACKGROUND",    (0,0),(-1,0),  hdr_color),
+        ("TEXTCOLOR",     (0,0),(-1,0),  colors.white),
+        ("FONTNAME",      (0,0),(-1,0),  "Helvetica-Bold"),
+        ("FONTSIZE",      (0,0),(-1,-1), 9),
+        ("ROWBACKGROUNDS",(0,1),(-1,-1), [colors.white, alt]),
+        ("BOX",           (0,0),(-1,-1), 0.5, BORD),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, BORD),
+        ("TOPPADDING",    (0,0),(-1,-1), 5),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 5),
+        ("LEFTPADDING",   (0,0),(-1,-1), 7),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 7),
+        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+    ])
+
+def _pdf_header(story, C, ST, subtitle):
+    """Shared letterhead for all reports."""
+    logo_cell = ""
+    if os.path.exists(LOGO_PATH):
+        try: logo_cell = RLImage(LOGO_PATH, width=20*mm, height=20*mm)
+        except: pass
+    title_block = [
+        Paragraph("TECHNOLOGICAL INSTITUTE OF THE PHILIPPINES", ST["SUB"]),
+        Paragraph("Student Clinical Database System", ST["TITLE"]),
+        Paragraph(subtitle, ST["SUB"]),
+    ]
+    ht = Table([[logo_cell, title_block]], colWidths=[26*mm, None])
+    ht.setStyle(TableStyle([
+        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+        ("ALIGN",         (1,0),(1,0),   "CENTER"),
+        ("TOPPADDING",    (0,0),(-1,-1), 3),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 3),
+    ]))
+    story.append(ht)
+    story.append(HRFlowable(width="100%", thickness=4, color=C["GOLD"], spaceAfter=1))
+    story.append(HRFlowable(width="100%", thickness=1, color=C["BLU"],  spaceAfter=5))
+
+def _pdf_footer(story, C, ST):
+    story.append(Spacer(1, 8*mm))
+    story.append(HRFlowable(width="100%", thickness=1, color=C["GOLD"]))
+    story.append(Spacer(1, 2*mm))
+    story.append(Paragraph(
+        "SCDS  |  Technological Institute of the Philippines  |  School Clinic",
+        ST["FOOT"]))
+
+# CLINIC-WIDE SUMMARY REPORT 
+def gen_clinic_report(path, by="System"):
+    C  = _pdf_colors()
+    ST = _pdf_styles(C)
+    d  = db_report()
+
+    doc = SimpleDocTemplate(path, pagesize=A4,
+        leftMargin=18*mm, rightMargin=18*mm, topMargin=14*mm, bottomMargin=14*mm)
+    story = []
+
+    _pdf_header(story, C, ST, "School Clinic — Summary Health Report")
+    story.append(Paragraph(
+        f"Generated by: <b>{by}</b>   |   Date: <b>{datetime.now().strftime('%B %d, %Y  %I:%M %p')}</b>",
+        ST["SMALL"]))
+    story.append(Spacer(1, 5*mm))
+
+    story.append(Paragraph("OVERVIEW", ST["SEC"]))
+    summary = Table(
+        [["Total Students", "Total Consultations"],
+         [str(d["ts"]),     str(d["tc"])]],
+        colWidths=[85*mm, 85*mm]
+    )
+    summary.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,0),  C["BLU"]),
+        ("TEXTCOLOR",     (0,0),(-1,0),  colors.white),
+        ("FONTNAME",      (0,0),(-1,0),  "Helvetica-Bold"),
+        ("FONTSIZE",      (0,0),(-1,0),  9),
+        ("ALIGN",         (0,0),(-1,-1), "CENTER"),
+        ("FONTNAME",      (0,1),(-1,1),  "Helvetica-Bold"),
+        ("FONTSIZE",      (0,1),(-1,1),  28),
+        ("TEXTCOLOR",     (0,1),(-1,1),  C["BLU"]),
+        ("BACKGROUND",    (0,1),(-1,1),  C["LITE"]),
+        ("BOX",           (0,0),(-1,-1), 1, C["BORD"]),
+        ("INNERGRID",     (0,0),(-1,-1), 0.5, C["BORD"]),
+        ("TOPPADDING",    (0,0),(-1,-1), 8),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 8),
+    ]))
+    story.append(summary); story.append(Spacer(1, 5*mm))
+
+    def stbl(rows, widths, hdr=None):
+        t = Table(rows, colWidths=widths)
+        t.setStyle(_tbl_style(hdr or C["BLU"], C["LITE"], C["BORD"]))
+        return t
+
+    if d["courses"]:
+        story.append(Paragraph("STUDENTS BY COURSE", ST["SEC"]))
+        rows = [["Course", "No. of Students"]] + \
+               [[r["course"] or "—", str(r["cnt"])] for r in d["courses"]]
+        story.append(stbl(rows, [130*mm, 40*mm])); story.append(Spacer(1, 5*mm))
+
+    if d["blood"]:
+        story.append(Paragraph("BLOOD TYPE DISTRIBUTION", ST["SEC"]))
+        rows = [["Blood Type", "Count"]] + \
+               [[r["blood_type"] or "Unknown", str(r["cnt"])] for r in d["blood"]]
+        story.append(stbl(rows, [130*mm, 40*mm])); story.append(Spacer(1, 5*mm))
+
+    if d["complaints"]:
+        story.append(Paragraph("TOP CHIEF COMPLAINTS", ST["SEC"]))
+        rows = [["#", "Chief Complaint", "Cases"]] + \
+               [[str(i+1), r["chief_complaint"], str(r["cnt"])]
+                for i, r in enumerate(d["complaints"])]
+        story.append(stbl(rows, [12*mm, 130*mm, 28*mm])); story.append(Spacer(1, 5*mm))
+
+    if d["allergies"]:
+        story.append(Paragraph("KNOWN ALLERGIES ON RECORD", ST["SEC"]))
+        rows = [["Allergy / Medication", "Students Affected"]] + \
+               [[r["known_allergies"], str(r["cnt"])] for r in d["allergies"]]
+        story.append(stbl(rows, [130*mm, 40*mm], hdr=C["RED"])); story.append(Spacer(1, 5*mm))
+
+    if d["recent"]:
+        story.append(Paragraph("RECENT CONSULTATIONS (Latest 20)", ST["SEC"]))
+        rows = [["Date", "Student Name", "ID", "Chief Complaint"]] + \
+               [[r["date_of_visit"], r["full_name"], r["student_id"],
+                 (r["chief_complaint"] or "")[:50]]
+                for r in d["recent"]]
+        story.append(stbl(rows, [22*mm, 60*mm, 22*mm, 66*mm]))
+
+    _pdf_footer(story, C, ST)
+    doc.build(story)
+    return path
+
+
+# INDIVIDUAL STUDENT HEALTH REPORT
+def gen_student_report(path, student: dict, by="System"):
+    """Generate a detailed health report for a single student."""
+    C  = _pdf_colors()
+    ST = _pdf_styles(C)
+    cons = db_consultations(student["student_id"])
+
+    doc = SimpleDocTemplate(path, pagesize=A4,
+        leftMargin=18*mm, rightMargin=18*mm, topMargin=14*mm, bottomMargin=14*mm)
+    story = []
+
+    _pdf_header(story, C, ST, "School Clinic — Individual Student Health Report")
+    story.append(Paragraph(
+        f"Generated by: <b>{by}</b>   |   Date: <b>{datetime.now().strftime('%B %d, %Y  %I:%M %p')}</b>",
+        ST["SMALL"]))
+    story.append(Spacer(1, 6*mm))
+
+    # ── Student Profile Card
+    story.append(Paragraph("STUDENT PROFILE", ST["SEC"]))
+
+    def info_row(label, value):
+        return [
+            Paragraph(f"<b>{label}</b>", ST["BODY"]),
+            Paragraph(value or "—",      ST["BODY"]),
+        ]
+
+    dob_str = student.get("date_of_birth", "") or ""
+    age_str = ""
+    if dob_str:
+        try:
+            dob = datetime.strptime(dob_str, "%Y-%m-%d")
+            age = (datetime.now() - dob).days // 365
+            age_str = f"{age} years old"
+        except: pass
+
+    profile_rows = [
+        info_row("Student ID",         student.get("student_id","")),
+        info_row("Full Name",           student.get("full_name","")),
+        info_row("Course",              student.get("course","")),
+        info_row("Year Level",          student.get("year_level","")),
+        info_row("Date of Birth",       f"{dob_str}  {age_str}".strip()),
+        info_row("Contact No.",         student.get("contact_no","")),
+        info_row("Address",             student.get("address","")),
+        info_row("Emergency Contact",   student.get("emergency_contact","")),
+        info_row("Blood Type",          student.get("blood_type","")),
+        info_row("Known Allergies",     student.get("known_allergies","") or "None"),
+    ]
+
+    prof_tbl = Table(profile_rows, colWidths=[45*mm, 125*mm])
+    prof_tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(0,-1),  C["LITE"]),
+        ("TEXTCOLOR",     (0,0),(0,-1),  C["BLU"]),
+        ("BOX",           (0,0),(-1,-1), 0.8, C["BORD"]),
+        ("INNERGRID",     (0,0),(-1,-1), 0.3, C["BORD"]),
+        ("TOPPADDING",    (0,0),(-1,-1), 6),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 6),
+        ("LEFTPADDING",   (0,0),(-1,-1), 8),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 8),
+        ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
+        # Highlight allergies row if not None/empty
+        *([("BACKGROUND", (1,9),(1,9), colors.HexColor("#FFF0F0")),
+           ("TEXTCOLOR",  (1,9),(1,9), C["RED"])]
+          if (student.get("known_allergies","") or "").lower() not in ("","none") else []),
+    ]))
+    story.append(prof_tbl)
+    story.append(Spacer(1, 6*mm))
+
+    # ── Consultation Summary Badge
+    story.append(Paragraph("CONSULTATION SUMMARY", ST["SEC"]))
+    badge_row = Table(
+        [["Total Clinic Visits", "Most Recent Visit"],
+         [str(len(cons)),
+          cons[0]["date_of_visit"] if cons else "No visits on record"]],
+        colWidths=[85*mm, 85*mm]
+    )
+    badge_row.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,0),  C["BLU"]),
+        ("TEXTCOLOR",     (0,0),(-1,0),  colors.white),
+        ("FONTNAME",      (0,0),(-1,0),  "Helvetica-Bold"),
+        ("FONTSIZE",      (0,0),(-1,0),  9),
+        ("ALIGN",         (0,0),(-1,-1), "CENTER"),
+        ("FONTNAME",      (0,1),(-1,1),  "Helvetica-Bold"),
+        ("FONTSIZE",      (0,1),(0,1),   28),
+        ("FONTSIZE",      (1,1),(1,1),   11),
+        ("TEXTCOLOR",     (0,1),(-1,1),  C["BLU"]),
+        ("BACKGROUND",    (0,1),(-1,1),  C["LITE"]),
+        ("BOX",           (0,0),(-1,-1), 1, C["BORD"]),
+        ("INNERGRID",     (0,0),(-1,-1), 0.5, C["BORD"]),
+        ("TOPPADDING",    (0,0),(-1,-1), 8),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 8),
+    ]))
+    story.append(badge_row)
+    story.append(Spacer(1, 6*mm))
+
+    # ── Consultation History
+    story.append(Paragraph("CONSULTATION HISTORY", ST["SEC"]))
+    if not cons:
+        story.append(Paragraph("No consultation records found for this student.", ST["BODY"]))
+    else:
+        for i, c in enumerate(cons):
+            # Per-consultation sub-block
+            visit_hdr = Table(
+                [[Paragraph(
+                    f"<b>Visit #{len(cons)-i}</b>  —  {c['date_of_visit']}   "
+                    f"| Nurse: {c.get('nurse_on_duty','—')}",
+                    ST["BOLD"]
+                )]],
+                colWidths=[170*mm]
+            )
+            visit_hdr.setStyle(TableStyle([
+                ("BACKGROUND",    (0,0),(-1,-1), C["BLU"]),
+                ("TEXTCOLOR",     (0,0),(-1,-1), colors.white),
+                ("TOPPADDING",    (0,0),(-1,-1), 5),
+                ("BOTTOMPADDING", (0,0),(-1,-1), 5),
+                ("LEFTPADDING",   (0,0),(-1,-1), 8),
+            ]))
+            story.append(visit_hdr)
+
+            def cfield(label, value):
+                return [Paragraph(f"<b>{label}</b>", ST["BODY"]),
+                        Paragraph(value or "—",       ST["BODY"])]
+
+            fu = c.get("follow_up_date","") or ""
+            detail_rows = [
+                cfield("Chief Complaint",    c.get("chief_complaint","")),
+                cfield("Diagnosis",          c.get("diagnosis","")),
+                cfield("Treatment",          c.get("treatment","")),
+                cfield("Prescribed Meds",    c.get("prescribed_meds","")),
+                cfield("Nurse Notes",        c.get("nurse_notes","")),
+                cfield("Follow-up Date",     fu if fu else "None"),
+            ]
+            det_tbl = Table(detail_rows, colWidths=[40*mm, 130*mm])
+            det_tbl.setStyle(TableStyle([
+                ("BACKGROUND",    (0,0),(0,-1),  C["LITE"]),
+                ("TEXTCOLOR",     (0,0),(0,-1),  C["DARK"]),
+                ("BOX",           (0,0),(-1,-1), 0.5, C["BORD"]),
+                ("INNERGRID",     (0,0),(-1,-1), 0.3, C["BORD"]),
+                ("TOPPADDING",    (0,0),(-1,-1), 5),
+                ("BOTTOMPADDING", (0,0),(-1,-1), 5),
+                ("LEFTPADDING",   (0,0),(-1,-1), 8),
+                ("RIGHTPADDING",  (0,0),(-1,-1), 8),
+                ("VALIGN",        (0,0),(-1,-1), "TOP"),
+            ]))
+            story.append(det_tbl)
+            story.append(Spacer(1, 4*mm))
+
+    _pdf_footer(story, C, ST)
+    doc.build(story)
+    return path
+
+# STYLESHEET
+GSS = f"""
+QWidget {{ font-family:'Segoe UI',Arial,sans-serif; font-size:13px;
+    background-color:{TIP_LIGHT}; color:{TIP_DARK}; }}
+QLineEdit,QComboBox,QDateEdit,QTextEdit {{
+    border:1.5px solid {TIP_BORD}; border-radius:6px; padding:7px 10px;
+    background:{TIP_WHITE}; color:{TIP_DARK}; }}
+QLineEdit:focus,QComboBox:focus,QDateEdit:focus,QTextEdit:focus {{ border:2px solid {TIP_BLUE}; }}
+QPushButton {{ background:{TIP_BLUE}; color:white; border:none; border-radius:6px;
+    padding:9px 20px; font-weight:bold; font-size:13px; }}
+QPushButton:hover {{ background:#00216b; }} QPushButton:pressed {{ background:#001540; }}
+QPushButton:disabled {{ background:#aab0c0; color:#dde; }}
+QPushButton#gold {{ background:{TIP_GOLD}; color:{TIP_DARK}; }}
+QPushButton#gold:hover {{ background:#e0a510; }}
+QPushButton#red {{ background:{TIP_RED}; }}
+QPushButton#red:hover {{ background:#9b2d22; }}
+QPushButton#green {{ background:{TIP_GREEN}; }}
+QPushButton#green:hover {{ background:#145c3a; }}
+QListWidget {{ border:1.5px solid {TIP_BORD}; border-radius:8px; background:{TIP_WHITE}; }}
+QListWidget::item {{ padding:10px 14px; border-bottom:1px solid {TIP_BORD}; }}
+QListWidget::item:hover {{ background:#EEF2FA; }}
+QListWidget::item:selected {{ background:{TIP_BLUE}; color:white; }}
+QTableWidget {{ border:1.5px solid {TIP_BORD}; border-radius:6px;
+    background:{TIP_WHITE}; gridline-color:{TIP_BORD}; }}
+QHeaderView::section {{ background:{TIP_BLUE}; color:white; font-weight:bold;
+    padding:6px; border:none; }}
+QTabWidget::pane {{ border:1.5px solid {TIP_BORD}; border-radius:6px; background:{TIP_WHITE}; }}
+QTabBar::tab {{ background:#D8DFF0; color:{TIP_DARK}; padding:8px 18px;
+    border-top-left-radius:6px; border-top-right-radius:6px; margin-right:2px; font-weight:bold; }}
+QTabBar::tab:selected {{ background:{TIP_BLUE}; color:white; }}
+QGroupBox {{ border:1.5px solid {TIP_BORD}; border-radius:8px; margin-top:10px;
+    padding-top:8px; font-weight:bold; color:{TIP_BLUE}; }}
+QGroupBox::title {{ subcontrol-origin:margin; left:12px; padding:0 6px; }}
+QScrollBar:vertical {{ border:none; background:{TIP_LIGHT}; width:8px; }}
+QScrollBar::handle:vertical {{ background:#B0BAD0; border-radius:4px; }}
+"""
+
+# UI HELPERS
+def banner(title, sub=""):
+    f = QFrame(); f.setFixedHeight(70 if sub else 54)
+    f.setStyleSheet(f"background:{TIP_BLUE}; border:none;")
+    lay = QHBoxLayout(f); lay.setContentsMargins(18,0,18,0)
+    if os.path.exists(LOGO_PATH):
+        lbl=QLabel(); pix=QPixmap(LOGO_PATH).scaled(42,42,Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation); lbl.setPixmap(pix)
+        lbl.setStyleSheet("background:transparent;"); lay.addWidget(lbl); lay.addSpacing(10)
+    col=QVBoxLayout()
+    t=QLabel(title); t.setFont(QFont("Segoe UI",15,QFont.Weight.Bold))
+    t.setStyleSheet("color:white;background:transparent;"); col.addWidget(t)
+    if sub:
+        s=QLabel(sub); s.setFont(QFont("Segoe UI",9))
+        s.setStyleSheet(f"color:{TIP_GOLD};background:transparent;"); col.addWidget(s)
+    lay.addLayout(col); lay.addStretch(); return f
+
+def gold_bar():
+    f=QFrame(); f.setFixedHeight(3); f.setStyleSheet(f"background:{TIP_GOLD};"); return f
+
+def stat_card(val, lbl, color=TIP_BLUE):
+    f=QFrame(); f.setStyleSheet(f"QFrame{{background:white;border:1.5px solid {TIP_BORD};border-radius:10px;}}")
+    lay=QVBoxLayout(f); lay.setContentsMargins(14,10,14,10)
+    v=QLabel(val); v.setFont(QFont("Segoe UI",26,QFont.Weight.Bold))
+    v.setStyleSheet(f"color:{color};border:none;background:transparent;"); v.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    l=QLabel(lbl); l.setFont(QFont("Segoe UI",10))
+    l.setStyleSheet(f"color:{TIP_MUTED};border:none;background:transparent;"); l.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lay.addWidget(v); lay.addWidget(l); return f
+
+def blbl(txt, color=TIP_BLUE):
+    l=QLabel(txt); l.setStyleSheet(f"color:{color};font-weight:bold;background:transparent;"); return l
+
+# DIALOGS
+class StudentDlg(QDialog):
+    def __init__(self, parent=None, student=None, existing_ids=None):
+        super().__init__(parent); self.student=student; self.existing=existing_ids or []
+        self.setWindowTitle("Add Student" if not student else "Edit Student")
+        self.setMinimumWidth(500); self.setStyleSheet(GSS); self._build()
+
+    def _f(self, ph=""): f=QLineEdit(); f.setPlaceholderText(ph); f.setMinimumHeight(36); return f
+
+    def _build(self):
+        lay=QVBoxLayout(self); lay.setSpacing(7)
+        lay.addWidget(blbl("Student ID *")); self.sid=self._f("e.g. 2412089"); lay.addWidget(self.sid)
+        lay.addWidget(blbl("Full Name *")); self.nm=self._f("Last Name, First Name M.I."); lay.addWidget(self.nm)
+        r=QHBoxLayout()
+        c1=QVBoxLayout(); c1.addWidget(blbl("Course"))
+        self.course=QComboBox(); self.course.addItems(["BSCpE","BSCS","BSIT","BSCE","BSEE","BSME","BSIE","BSARCH","Other"])
+        self.course.setMinimumHeight(36); c1.addWidget(self.course); r.addLayout(c1)
+        c2=QVBoxLayout(); c2.addWidget(blbl("Year Level"))
+        self.year=QComboBox(); self.year.addItems(["1st Year","2nd Year","3rd Year","4th Year","5th Year"])
+        self.year.setMinimumHeight(36); c2.addWidget(self.year); r.addLayout(c2); lay.addLayout(r)
+        lay.addWidget(blbl("Date of Birth")); self.dob=QDateEdit(); self.dob.setCalendarPopup(True)
+        self.dob.setDate(QDate(2002,1,1)); self.dob.setMinimumHeight(36); lay.addWidget(self.dob)
+        lay.addWidget(blbl("Contact Number")); self.ct=self._f("09XX-XXX-XXXX"); lay.addWidget(self.ct)
+        lay.addWidget(blbl("Address")); self.addr=self._f("Barangay, City/Municipality"); lay.addWidget(self.addr)
+        lay.addWidget(blbl("Emergency Contact")); self.em=self._f("Name / Number"); lay.addWidget(self.em)
+        r2=QHBoxLayout()
+        c3=QVBoxLayout(); c3.addWidget(blbl("Blood Type"))
+        self.bt=QComboBox(); self.bt.addItems(["A+","A-","B+","B-","AB+","AB-","O+","O-","Unknown"])
+        self.bt.setMinimumHeight(36); c3.addWidget(self.bt); r2.addLayout(c3)
+        c4=QVBoxLayout(); c4.addWidget(blbl("Known Allergies"))
+        self.al=self._f("Penicillin / None"); c4.addWidget(self.al); r2.addLayout(c4); lay.addLayout(r2)
+        bb=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(self._ok); bb.rejected.connect(self.reject); lay.addWidget(bb)
+        if self.student: self._load()
+
+    def _load(self):
+        s=self.student; self.sid.setText(s.get("student_id","")); self.sid.setEnabled(False)
+        self.nm.setText(s.get("full_name",""))
+        i=self.course.findText(s.get("course","")); self.course.setCurrentIndex(max(i,0))
+        i=self.year.findText(s.get("year_level","")); self.year.setCurrentIndex(max(i,0))
+        if s.get("date_of_birth"):
+            d=QDate.fromString(s["date_of_birth"],"yyyy-MM-dd")
+            if d.isValid(): self.dob.setDate(d)
+        self.ct.setText(s.get("contact_no","")); self.addr.setText(s.get("address",""))
+        self.em.setText(s.get("emergency_contact",""))
+        i=self.bt.findText(s.get("blood_type","Unknown")); self.bt.setCurrentIndex(max(i,0))
+        self.al.setText(s.get("known_allergies",""))
+
+    def _ok(self):
+        sid=self.sid.text().strip(); nm=self.nm.text().strip()
+        if not sid: QMessageBox.warning(self,"Error","Student ID required."); return
+        if not sid.isdigit() or len(sid) != 7:
+            QMessageBox.warning(self,"Error","Student ID must be exactly 7 digits (e.g. 2412089)."); return
+        if not nm:  QMessageBox.warning(self,"Error","Full Name required."); return
+        if not self.student and sid in self.existing:
+            QMessageBox.warning(self,"Error",f"ID '{sid}' already exists."); return
+        self.accept()
+
+    def data(self):
+        return dict(student_id=self.sid.text().strip(),full_name=self.nm.text().strip(),
+            course=self.course.currentText(),year_level=self.year.currentText(),
+            date_of_birth=self.dob.date().toString("yyyy-MM-dd"),contact_no=self.ct.text().strip(),
+            address=self.addr.text().strip(),emergency_contact=self.em.text().strip(),
+            blood_type=self.bt.currentText(),known_allergies=self.al.text().strip())
+
+
+class ConDlg(QDialog):
+    def __init__(self, parent=None, con=None, sid=""):
+        super().__init__(parent); self.con=con; self.sid=sid
+        self.setWindowTitle("Add Consultation" if not con else "Edit Consultation")
+        self.setMinimumWidth(480); self.setStyleSheet(GSS); self._build()
+
+    def _f(self, ph=""): f=QLineEdit(); f.setPlaceholderText(ph); f.setMinimumHeight(36); return f
+
+    def _build(self):
+        lay=QVBoxLayout(self); lay.setSpacing(7)
+        lay.addWidget(blbl("Date of Visit *")); self.dt=QDateEdit(); self.dt.setCalendarPopup(True)
+        self.dt.setDate(QDate.currentDate()); self.dt.setMinimumHeight(36); lay.addWidget(self.dt)
+        lay.addWidget(blbl("Chief Complaint *")); self.cc=self._f("e.g. Headache, Fever..."); lay.addWidget(self.cc)
+        lay.addWidget(blbl("Diagnosis")); self.dx=self._f("e.g. Viral URTI"); lay.addWidget(self.dx)
+        lay.addWidget(blbl("Treatment / Intervention")); self.tx=self._f("e.g. Rest, ice pack..."); lay.addWidget(self.tx)
+        lay.addWidget(blbl("Prescribed Medications")); self.rx=self._f("e.g. Paracetamol 500mg TID"); lay.addWidget(self.rx)
+        lay.addWidget(blbl("Nurse Notes")); self.nt=QTextEdit(); self.nt.setMaximumHeight(65)
+        self.nt.setPlaceholderText("Observations, vital signs..."); lay.addWidget(self.nt)
+        lay.addWidget(blbl("Nurse on Duty")); self.nd=self._f("Full name"); lay.addWidget(self.nd)
+        lay.addWidget(blbl("Follow-up Date (optional)")); self.fu=QDateEdit(); self.fu.setCalendarPopup(True)
+        self.fu.setDate(QDate.currentDate()); self.fu.setMinimumHeight(36); lay.addWidget(self.fu)
+        bb=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(self._ok); bb.rejected.connect(self.reject); lay.addWidget(bb)
+        if self.con: self._load()
+
+    def _load(self):
+        c=self.con
+        if c.get("date_of_visit"):
+            d=QDate.fromString(c["date_of_visit"],"yyyy-MM-dd")
+            if d.isValid(): self.dt.setDate(d)
+        self.cc.setText(c.get("chief_complaint",""));self.dx.setText(c.get("diagnosis",""))
+        self.tx.setText(c.get("treatment",""));self.rx.setText(c.get("prescribed_meds",""))
+        self.nt.setText(c.get("nurse_notes",""));self.nd.setText(c.get("nurse_on_duty",""))
+        if c.get("follow_up_date"):
+            d2=QDate.fromString(c["follow_up_date"],"yyyy-MM-dd")
+            if d2.isValid(): self.fu.setDate(d2)
+
+    def _ok(self):
+        if not self.cc.text().strip(): QMessageBox.warning(self,"Error","Chief Complaint required."); return
+        self.accept()
+
+    def data(self):
+        return dict(id=self.con.get("id") if self.con else None,
+            student_id=self.con.get("student_id","") if self.con else self.sid,
+            date_of_visit=self.dt.date().toString("yyyy-MM-dd"),
+            chief_complaint=self.cc.text().strip(),diagnosis=self.dx.text().strip(),
+            treatment=self.tx.text().strip(),prescribed_meds=self.rx.text().strip(),
+            nurse_notes=self.nt.toPlainText().strip(),nurse_on_duty=self.nd.text().strip(),
+            follow_up_date=self.fu.date().toString("yyyy-MM-dd"))
+
+# CONSULTATION PANEL
+class ConPanel(QWidget):
+    def __init__(self, student, can_edit=True):
+        super().__init__(); self.student=student; self.can_edit=can_edit
+        self.setStyleSheet(GSS); self._build(); self._load()
+
+    def _build(self):
+        lay=QVBoxLayout(self); lay.setContentsMargins(0,0,0,0)
+        gb=QGroupBox(f"Student: {self.student['full_name']}  ({self.student['student_id']})")
+        fl=QFormLayout(gb); fl.setSpacing(5)
+        for lbl,key in [("Course","course"),("Year","year_level"),("Blood","blood_type"),
+                        ("Allergies","known_allergies"),("Contact","contact_no"),("Emergency","emergency_contact")]:
+            v=QLabel(self.student.get(key) or "—")
+            v.setStyleSheet(f"color:{TIP_DARK};font-weight:bold;background:transparent;")
+            fl.addRow(QLabel(lbl+":"),v)
+        lay.addWidget(gb)
+        if self.can_edit:
+            ab=QPushButton("+ Add Consultation"); ab.clicked.connect(self._add)
+            lay.addWidget(ab)
+        self.tbl=QTableWidget(); self.tbl.setColumnCount(6)
+        self.tbl.setHorizontalHeaderLabels(["Date","Chief Complaint","Diagnosis","Treatment","Nurse","Follow-up"])
+        self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.tbl.setAlternatingRowColors(True)
+        self.tbl.setStyleSheet("alternate-background-color:#EEF2FA;")
+        lay.addWidget(self.tbl)
+        if self.can_edit:
+            rb=QHBoxLayout()
+            eb=QPushButton("✏  Edit Selected"); eb.clicked.connect(self._edit); rb.addWidget(eb)
+            db=QPushButton("🗑  Delete Selected"); db.setObjectName("red"); db.clicked.connect(self._del); rb.addWidget(db)
+            rb.addStretch(); lay.addLayout(rb)
+
+    def _load(self):
+        self.cons=db_consultations(self.student["student_id"]); self.tbl.setRowCount(len(self.cons))
+        for r,c in enumerate(self.cons):
+            for col,k in enumerate(["date_of_visit","chief_complaint","diagnosis","treatment","nurse_on_duty","follow_up_date"]):
+                self.tbl.setItem(r,col,QTableWidgetItem(c.get(k) or ""))
+
+    def _add(self):
+        dlg=ConDlg(self,sid=self.student["student_id"])
+        if dlg.exec(): db_save_consult(dlg.data()); self._load()
+
+    def _edit(self):
+        row=self.tbl.currentRow()
+        if row<0: QMessageBox.information(self,"Info","Select a row first."); return
+        dlg=ConDlg(self,con=self.cons[row])
+        if dlg.exec(): db_save_consult(dlg.data()); self._load()
+
+    def _del(self):
+        row=self.tbl.currentRow()
+        if row<0: QMessageBox.information(self,"Info","Select a row first."); return
+        if QMessageBox.question(self,"Confirm","Delete this record?",
+                QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)==QMessageBox.StandardButton.Yes:
+            db_del_consult(self.cons[row]["id"]); self._load()
+
+# STUDENT DIRECTORY PANEL
+class DirPanel(QWidget):
+    def __init__(self, can_edit=True):
+        super().__init__(); self.can_edit=can_edit; self.setStyleSheet(GSS)
+        self._build(); self._load()
+
+    def _build(self):
+        lay=QVBoxLayout(self)
+        tb=QHBoxLayout()
+        self.srch=QLineEdit(); self.srch.setPlaceholderText("🔍  Search name, ID, course...")
+        self.srch.setMinimumHeight(38); self.srch.textChanged.connect(self._filter); tb.addWidget(self.srch)
+        if self.can_edit:
+            ab=QPushButton("+ Add Student"); ab.clicked.connect(self._add); tb.addWidget(ab)
+        lay.addLayout(tb)
+        self.tbl=QTableWidget(); self.tbl.setColumnCount(6)
+        self.tbl.setHorizontalHeaderLabels(["Student ID","Full Name","Course","Year","Blood","Allergies"])
+        self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.tbl.setAlternatingRowColors(True); self.tbl.setStyleSheet("alternate-background-color:#EEF2FA;")
+        self.tbl.doubleClicked.connect(self._open); lay.addWidget(self.tbl)
+        hint=QLabel("Double-click a student to view / manage consultations.")
+        hint.setStyleSheet(f"color:{TIP_MUTED};font-size:11px;background:transparent;"); lay.addWidget(hint)
+        if self.can_edit:
+            rb=QHBoxLayout()
+            eb=QPushButton("✏  Edit Student"); eb.clicked.connect(self._edit); rb.addWidget(eb)
+            db=QPushButton("🗑  Delete Student"); db.setObjectName("red"); db.clicked.connect(self._del); rb.addWidget(db)
+            rb.addStretch(); lay.addLayout(rb)
+
+    def _load(self):
+        self.students=db_students(); self._pop(self.students)
+
+    def _pop(self, lst):
+        self.tbl.setRowCount(len(lst))
+        for r,s in enumerate(lst):
+            for col,k in enumerate(["student_id","full_name","course","year_level","blood_type","known_allergies"]):
+                self.tbl.setItem(r,col,QTableWidgetItem(s.get(k) or ""))
+
+    def _filter(self,t):
+        t=t.lower()
+        self._pop([s for s in self.students if t in s.get("full_name","").lower()
+                   or t in s.get("student_id","").lower() or t in s.get("course","").lower()])
+
+    def _sel(self):
+        row=self.tbl.currentRow()
+        if row<0: return None
+        sid=self.tbl.item(row,0).text()
+        return next((s for s in self.students if s["student_id"]==sid),None)
+
+    def _add(self):
+        dlg=StudentDlg(self,existing_ids=[s["student_id"] for s in self.students])
+        if dlg.exec(): db_save_student(dlg.data()); self._load()
+
+    def _edit(self):
+        s=self._sel()
+        if not s: QMessageBox.information(self,"Info","Select a student."); return
+        dlg=StudentDlg(self,student=s)
+        if dlg.exec(): db_save_student(dlg.data()); self._load()
+
+    def _del(self):
+        s=self._sel()
+        if not s: QMessageBox.information(self,"Info","Select a student."); return
+        if QMessageBox.question(self,"Confirm",
+                f"Delete '{s['full_name']}' and ALL records?",
+                QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)==QMessageBox.StandardButton.Yes:
+            db_del_student(s["student_id"]); self._load()
+
+    def _open(self):
+        s=self._sel()
+        if not s: return
+        dlg=QDialog(self); dlg.setWindowTitle(f"Consultations — {s['full_name']}")
+        dlg.resize(900,600); dlg.setStyleSheet(GSS)
+        lay=QVBoxLayout(dlg); lay.addWidget(ConPanel(s,can_edit=self.can_edit))
+        cb=QPushButton("Close"); cb.clicked.connect(dlg.close); lay.addWidget(cb)
+        dlg.exec()
+
+# REPORT TAB (shared by Admin & Nurse)
+class ReportTab(QWidget):
+    """Health Report Generator — usable by Admin and Nurse roles."""
+
+    def __init__(self, user):
+        super().__init__(); self.user = user
+        self.setStyleSheet(GSS); self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self); lay.setContentsMargins(20, 20, 20, 20); lay.setSpacing(14)
+
+        # Title
+        t = QLabel("📄  Health Report Generator")
+        t.setFont(QFont("Segoe UI", 15, QFont.Weight.Bold))
+        t.setStyleSheet(f"color:{TIP_BLUE};background:transparent;"); lay.addWidget(t)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color:{TIP_BORD};"); lay.addWidget(sep)
+
+        # Both Admin and Nurse get full report access; Staff gets neither
+        can_report = self.user.get("role") in ("Admin", "Nurse")
+        mode_box = QGroupBox("Report Type"); mode_lay = QHBoxLayout(mode_box)
+
+        self.rb_clinic  = QPushButton("🏥  Clinic Summary Report")
+        self.rb_student = QPushButton("👤  Individual Student Report")
+        toggle_style = f"""
+            QPushButton {{background:{TIP_LIGHT};color:{TIP_DARK};border:1.5px solid {TIP_BORD};
+                border-radius:6px;font-weight:bold;font-size:13px;padding:8px 16px;}}
+            QPushButton:checked {{background:{TIP_BLUE};color:white;border-color:{TIP_BLUE};}}
+            QPushButton:hover:!checked {{background:#dde4f0;}}
+        """
+        for btn in (self.rb_clinic, self.rb_student):
+            btn.setCheckable(True); btn.setMinimumHeight(42)
+            btn.setStyleSheet(toggle_style)
+            mode_lay.addWidget(btn)
+
+        self.rb_clinic.setChecked(True)
+        self.rb_clinic.clicked.connect(lambda: self._switch_mode(False))
+        self.rb_student.clicked.connect(lambda: self._switch_mode(True))
+
+        lay.addWidget(mode_box)
+
+        # Student selector
+        self.student_box = QGroupBox("Select Student")
+        sb_lay = QVBoxLayout(self.student_box); sb_lay.setSpacing(8)
+
+        self.rep_srch = QLineEdit(); self.rep_srch.setPlaceholderText("🔍  Search by name or ID...")
+        self.rep_srch.setMinimumHeight(36); self.rep_srch.textChanged.connect(self._filter_students)
+        sb_lay.addWidget(self.rep_srch)
+
+        self.rep_list = QListWidget(); self.rep_list.setMaximumHeight(200)
+        self.rep_list.setStyleSheet(f"""
+            QListWidget {{border:1.5px solid {TIP_BORD};border-radius:6px;background:white;font-size:12px;}}
+            QListWidget::item {{padding:8px 12px;border-bottom:1px solid {TIP_BORD};}}
+            QListWidget::item:selected {{background:{TIP_BLUE};color:white;}}
+            QListWidget::item:hover {{background:#EEF2FA;}}
+        """)
+        sb_lay.addWidget(self.rep_list)
+
+        self._all_students = []
+        self._reload_students()
+
+        self.student_box.setVisible(False)   # default: clinic summary mode
+        lay.addWidget(self.student_box)
+
+        # Generate Button
+        gen_row = QHBoxLayout()
+        self.gen_btn = QPushButton("📄  Generate & Save PDF")
+        self.gen_btn.setObjectName("gold"); self.gen_btn.setMinimumHeight(46)
+        self.gen_btn.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        self.gen_btn.clicked.connect(self._gen)
+        gen_row.addWidget(self.gen_btn); gen_row.addStretch()
+        lay.addLayout(gen_row)
+
+        self.rsts = QLabel("")
+        self.rsts.setWordWrap(True)
+        self.rsts.setStyleSheet(f"color:{TIP_GREEN};background:transparent;font-weight:bold;font-size:12px;")
+        lay.addWidget(self.rsts)
+        lay.addStretch()
+
+    def _switch_mode(self, student_mode):
+        self.rb_clinic.setChecked(not student_mode)
+        self.rb_student.setChecked(student_mode)
+        self.student_box.setVisible(student_mode)
+        self.rsts.setText("")
+
+    def _reload_students(self):
+        self._all_students = db_students()
+        self._fill_list(self._all_students)
+
+    def _fill_list(self, lst):
+        self.rep_list.clear()
+        for s in lst:
+            item = QListWidgetItem(f"  {s['student_id']}  —  {s['full_name']}  ({s.get('course','')})")
+            item.setData(Qt.ItemDataRole.UserRole, s)
+            self.rep_list.addItem(item)
+
+    def _filter_students(self, text):
+        t = text.lower()
+        self._fill_list([
+            s for s in self._all_students
+            if t in s.get("full_name","").lower() or t in s.get("student_id","").lower()
+        ])
+
+    def _gen(self):
+        self.rsts.setText("")
+        student_mode = self.rb_student.isChecked()
+
+        if student_mode:
+            sel = self.rep_list.currentItem()
+            if not sel:
+                QMessageBox.warning(self, "No Student Selected",
+                    "Please select a student from the list."); return
+            student = sel.data(Qt.ItemDataRole.UserRole)
+            fname = f"SCDS_{student['student_id']}_HealthReport.pdf"
+            path  = os.path.join(os.path.expanduser("~"), fname)
+            try:
+                gen_student_report(path, student, by=self.user["full_name"])
+                self.rsts.setText(f"✅  Student report saved:\n{path}")
+                QMessageBox.information(self, "Done",
+                    f"Health report for {student['full_name']} saved to:\n{path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to generate report:\n{e}")
+        else:
+            path = os.path.join(os.path.expanduser("~"), "SCDS_Clinic_Summary_Report.pdf")
+            try:
+                gen_clinic_report(path, by=self.user["full_name"])
+                self.rsts.setText(f"✅  Clinic summary report saved:\n{path}")
+                QMessageBox.information(self, "Done", f"Clinic summary report saved to:\n{path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to generate report:\n{e}")
+
+
+# ADMIN WINDOW
+class AdminWin(QMainWindow):
+    def __init__(self, user, on_logout):
+        super().__init__(); self.user=user; self.on_logout=on_logout
+        self.setWindowTitle("SCDS — Admin"); self.setMinimumSize(1100,680); self.setStyleSheet(GSS)
+        root=QWidget(); self.setCentralWidget(root)
+        vl=QVBoxLayout(root); vl.setContentsMargins(0,0,0,0); vl.setSpacing(0)
+        bn=banner("SCDS — Admin Panel",f"T.I.P. School Clinic  |  {self.user['full_name']} (Admin)")
+        lb=QPushButton("⇠ Logout"); lb.setObjectName("gold"); lb.setStyleSheet(f"background:{TIP_GOLD};color:{TIP_DARK};font-weight:bold;border-radius:5px;padding:6px 14px;")
+        lb.clicked.connect(on_logout); bn.layout().addWidget(lb)
+        vl.addWidget(bn); vl.addWidget(gold_bar())
+        tabs=QTabWidget(); vl.addWidget(tabs)
+        tabs.addTab(self._dash(),"📊 Dashboard")
+        tabs.addTab(DirPanel(can_edit=True),"👤 Students & Records")
+        tabs.addTab(self._report_tab(),"📄 Health Report")
+        tabs.addTab(self._users_tab(),"👥 User Management")
+
+    def _dash(self):
+        w=QWidget(); dl=QVBoxLayout(w); dl.setContentsMargins(16,16,16,16)
+        d=db_report()
+        cr=QHBoxLayout()
+        cr.addWidget(stat_card(str(d["ts"]),"Total Students",TIP_BLUE))
+        cr.addWidget(stat_card(str(d["tc"]),"Total Consultations",TIP_GREEN))
+        cr.addWidget(stat_card(str(len(d["courses"])),"Courses",TIP_GOLD))
+        ac=sum(r["cnt"] for r in d["allergies"])
+        cr.addWidget(stat_card(str(ac),"Students w/ Allergies",TIP_RED))
+        dl.addLayout(cr); dl.addSpacing(12)
+        rl=QLabel("Recent Consultations"); rl.setFont(QFont("Segoe UI",13,QFont.Weight.Bold))
+        rl.setStyleSheet(f"color:{TIP_BLUE};background:transparent;"); dl.addWidget(rl)
+        rt=QTableWidget(min(len(d["recent"]),10),4)
+        rt.setHorizontalHeaderLabels(["Date","Student","ID","Chief Complaint"])
+        rt.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        rt.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        rt.setAlternatingRowColors(True); rt.setStyleSheet("alternate-background-color:#EEF2FA;")
+        for r,row in enumerate(d["recent"][:10]):
+            rt.setItem(r,0,QTableWidgetItem(row["date_of_visit"]))
+            rt.setItem(r,1,QTableWidgetItem(row["full_name"]))
+            rt.setItem(r,2,QTableWidgetItem(row["student_id"]))
+            rt.setItem(r,3,QTableWidgetItem(row["chief_complaint"] or ""))
+        dl.addWidget(rt); return w
+
+    def _report_tab(self):
+        return ReportTab(self.user)
+
+    def _users_tab(self):
+        w=QWidget(); lay=QVBoxLayout(w); lay.setContentsMargins(16,16,16,16)
+        self.utbl=QTableWidget(); self.utbl.setColumnCount(4)
+        self.utbl.setHorizontalHeaderLabels(["ID","Username","Full Name","Role"])
+        self.utbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.utbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.utbl.setAlternatingRowColors(True); self.utbl.setStyleSheet("alternate-background-color:#EEF2FA;")
+        lay.addWidget(self.utbl); self._reload_u()
+        gb=QGroupBox("Add New User"); fl=QFormLayout(gb); fl.setSpacing(7)
+        self.nu_un=QLineEdit(); self.nu_un.setMinimumHeight(34); fl.addRow("Username *",self.nu_un)
+        self.nu_pw=QLineEdit(); self.nu_pw.setEchoMode(QLineEdit.EchoMode.Password); self.nu_pw.setMinimumHeight(34); fl.addRow("Password *",self.nu_pw)
+        self.nu_fn=QLineEdit(); self.nu_fn.setMinimumHeight(34); fl.addRow("Full Name",self.nu_fn)
+        self.nu_rl=QComboBox(); self.nu_rl.addItems(["Admin","Staff","Nurse"]); self.nu_rl.setMinimumHeight(34); fl.addRow("Role",self.nu_rl)
+        br=QHBoxLayout()
+        add_b=QPushButton("Add User"); add_b.clicked.connect(self._add_u); br.addWidget(add_b)
+        del_b=QPushButton("Delete Selected"); del_b.setObjectName("red"); del_b.clicked.connect(self._del_u); br.addWidget(del_b)
+        br.addStretch(); fl.addRow(br); lay.addWidget(gb); return w
+
+    def _reload_u(self):
+        self._ud=db_users(); self.utbl.setRowCount(len(self._ud))
+        for r,u in enumerate(self._ud):
+            self.utbl.setItem(r,0,QTableWidgetItem(str(u["id"])))
+            self.utbl.setItem(r,1,QTableWidgetItem(u["username"]))
+            self.utbl.setItem(r,2,QTableWidgetItem(u["full_name"] or ""))
+            self.utbl.setItem(r,3,QTableWidgetItem(u["role"]))
+
+    def _add_u(self):
+        un=self.nu_un.text().strip(); pw=self.nu_pw.text()
+        fn=self.nu_fn.text().strip(); role=self.nu_rl.currentText()
+        if not un or not pw: QMessageBox.warning(self,"Error","Username and Password required."); return
+        if db_add_user(un,pw,role,fn):
+            self.nu_un.clear(); self.nu_pw.clear(); self.nu_fn.clear(); self._reload_u()
+            QMessageBox.information(self,"Done",f"User '{un}' added.")
+        else: QMessageBox.warning(self,"Error",f"Username '{un}' already exists.")
+
+    def _del_u(self):
+        row=self.utbl.currentRow()
+        if row<0: QMessageBox.information(self,"Info","Select a user."); return
+        uid=int(self.utbl.item(row,0).text()); un=self.utbl.item(row,1).text()
+        if un==self.user["username"]: QMessageBox.warning(self,"Error","Cannot delete yourself."); return
+        if QMessageBox.question(self,"Confirm",f"Delete user '{un}'?",
+                QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)==QMessageBox.StandardButton.Yes:
+            db_del_user(uid); self._reload_u()
+
+# STAFF WINDOW
+class StaffWin(QMainWindow):
+    def __init__(self, user, on_logout):
+        super().__init__(); self.user=user; self.setWindowTitle("SCDS — Staff")
+        self.setMinimumSize(1000,640); self.setStyleSheet(GSS)
+        root=QWidget(); self.setCentralWidget(root)
+        vl=QVBoxLayout(root); vl.setContentsMargins(0,0,0,0); vl.setSpacing(0)
+        bn=banner("SCDS — Staff Panel",f"T.I.P. School Clinic  |  {user['full_name']} (Staff)")
+        lb=QPushButton("⇠ Logout"); lb.setStyleSheet(f"background:{TIP_GOLD};color:{TIP_DARK};font-weight:bold;border-radius:5px;padding:6px 14px;")
+        lb.clicked.connect(on_logout); bn.layout().addWidget(lb)
+        vl.addWidget(bn); vl.addWidget(gold_bar())
+        tabs=QTabWidget(); vl.addWidget(tabs)
+        tabs.addTab(DirPanel(can_edit=True),"👤 Students & Records")
+        d=db_report(); ov=QWidget(); ol=QVBoxLayout(ov); ol.setContentsMargins(16,16,16,16)
+        ol.setAlignment(Qt.AlignmentFlag.AlignTop)
+        cr=QHBoxLayout()
+        cr.addWidget(stat_card(str(d["ts"]),"Total Students",TIP_BLUE))
+        cr.addWidget(stat_card(str(d["tc"]),"Total Consultations",TIP_GREEN))
+        ol.addLayout(cr); tabs.addTab(ov,"📊 Overview")
+
+# NURSE WINDOW  (full access — same as Admin minus User Management)
+class NurseWin(QMainWindow):
+    def __init__(self, user, on_logout):
+        super().__init__(); self.user=user; self.setWindowTitle("SCDS — Nurse")
+        self.setMinimumSize(1100,680); self.setStyleSheet(GSS)
+        root=QWidget(); self.setCentralWidget(root)
+        vl=QVBoxLayout(root); vl.setContentsMargins(0,0,0,0); vl.setSpacing(0)
+        bn=banner("SCDS — Nurse Panel",f"T.I.P. School Clinic  |  {user['full_name']} (Nurse)")
+        lb=QPushButton("⇠ Logout"); lb.setStyleSheet(f"background:{TIP_GOLD};color:{TIP_DARK};font-weight:bold;border-radius:5px;padding:6px 14px;")
+        lb.clicked.connect(on_logout); bn.layout().addWidget(lb)
+        vl.addWidget(bn); vl.addWidget(gold_bar())
+        tabs=QTabWidget(); vl.addWidget(tabs)
+        tabs.addTab(self._dash(),"📊 Dashboard")
+        tabs.addTab(DirPanel(can_edit=True),"👤 Students & Records")
+        tabs.addTab(ReportTab(user),"📄 Health Report")
+
+    def _dash(self):
+        w=QWidget(); dl=QVBoxLayout(w); dl.setContentsMargins(16,16,16,16)
+        d=db_report()
+        cr=QHBoxLayout()
+        cr.addWidget(stat_card(str(d["ts"]),"Total Students",TIP_BLUE))
+        cr.addWidget(stat_card(str(d["tc"]),"Total Consultations",TIP_GREEN))
+        cr.addWidget(stat_card(str(len(d["courses"])),"Courses",TIP_GOLD))
+        ac=sum(r["cnt"] for r in d["allergies"])
+        cr.addWidget(stat_card(str(ac),"Students w/ Allergies",TIP_RED))
+        dl.addLayout(cr); dl.addSpacing(12)
+        rl=QLabel("Recent Consultations"); rl.setFont(QFont("Segoe UI",13,QFont.Weight.Bold))
+        rl.setStyleSheet(f"color:{TIP_BLUE};background:transparent;"); dl.addWidget(rl)
+        rt=QTableWidget(min(len(d["recent"]),10),4)
+        rt.setHorizontalHeaderLabels(["Date","Student","ID","Chief Complaint"])
+        rt.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        rt.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        rt.setAlternatingRowColors(True); rt.setStyleSheet("alternate-background-color:#EEF2FA;")
+        for r,row in enumerate(d["recent"][:10]):
+            rt.setItem(r,0,QTableWidgetItem(row["date_of_visit"]))
+            rt.setItem(r,1,QTableWidgetItem(row["full_name"]))
+            rt.setItem(r,2,QTableWidgetItem(row["student_id"]))
+            rt.setItem(r,3,QTableWidgetItem(row["chief_complaint"] or ""))
+        dl.addWidget(rt); return w
+
+# LOGIN WINDOW
+class LoginWin(QMainWindow):
+    def __init__(self):
+        super().__init__(); self.setWindowTitle("SCDS — Login")
+        self.setFixedSize(460,560); self.setStyleSheet(GSS); self._rw=None; self._build()
+
+    def _build(self):
+        root=QWidget(); self.setCentralWidget(root)
+        vl=QVBoxLayout(root); vl.setContentsMargins(0,0,0,0); vl.setSpacing(0)
+        vl.addWidget(banner("Student Clinical Database System","Technological Institute of the Philippines"))
+        vl.addWidget(gold_bar())
+        card=QWidget(); card.setStyleSheet(f"background:{TIP_LIGHT};")
+        cl=QVBoxLayout(card); cl.setContentsMargins(46,28,46,28); cl.setSpacing(0)
+        if os.path.exists(LOGO_PATH):
+            ll=QLabel(); ll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            pix=QPixmap(LOGO_PATH).scaled(88,88,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation)
+            ll.setPixmap(pix); ll.setStyleSheet("background:transparent;"); cl.addWidget(ll); cl.addSpacing(6)
+        t=QLabel("Clinic Staff Login"); t.setFont(QFont("Segoe UI",16,QFont.Weight.Bold))
+        t.setAlignment(Qt.AlignmentFlag.AlignCenter); t.setStyleSheet(f"color:{TIP_BLUE};background:transparent;"); cl.addWidget(t)
+        s=QLabel("Authorized Personnel Only"); s.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        s.setStyleSheet(f"color:{TIP_MUTED};font-size:11px;background:transparent;"); cl.addWidget(s); cl.addSpacing(20)
+        cl.addWidget(blbl("Username")); self.un=QLineEdit(); self.un.setPlaceholderText("Enter username")
+        self.un.setMinimumHeight(42); cl.addWidget(self.un); cl.addSpacing(8)
+        cl.addWidget(blbl("Password")); self.pw=QLineEdit(); self.pw.setPlaceholderText("Enter password")
+        self.pw.setEchoMode(QLineEdit.EchoMode.Password); self.pw.setMinimumHeight(42)
+        self.pw.returnPressed.connect(self._login); cl.addWidget(self.pw); cl.addSpacing(18)
+        lb=QPushButton("Login"); lb.setMinimumHeight(46); lb.setFont(QFont("Segoe UI",13,QFont.Weight.Bold))
+        lb.clicked.connect(self._login); cl.addWidget(lb); cl.addSpacing(10)
+        self.err=QLabel(""); self.err.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.err.setStyleSheet(f"color:{TIP_RED};background:transparent;font-weight:bold;"); cl.addWidget(self.err)
+        cl.addStretch()
+        hint=QLabel("Demo: admin/admin123  ·  staff1/staff123  ·  nurse1/nurse123")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setStyleSheet(f"color:{TIP_MUTED};font-size:10px;background:transparent;"); cl.addWidget(hint)
+        vl.addWidget(card,1)
+        foot=QWidget(); foot.setStyleSheet(f"background:{TIP_BLUE};"); foot.setFixedHeight(26)
+        fl=QHBoxLayout(foot); fl.setContentsMargins(12,0,12,0)
+        fv=QLabel("SCDS v1.0  |  Group 3  |  CPE 011"); fv.setStyleSheet("color:#8aafd4;font-size:10px;background:transparent;")
+        fl.addStretch(); fl.addWidget(fv); fl.addStretch(); vl.addWidget(foot)
+
+    def _login(self):
+        un=self.un.text().strip(); pw=self.pw.text()
+        if not un or not pw: self.err.setText("Enter username and password."); return
+        user=db_auth(un,pw)
+        if not user: self.err.setText("Invalid username or password."); self.pw.clear(); return
+        self.hide(); role=user["role"]
+        if   role=="Admin": self._rw=AdminWin(user,self._logout)
+        elif role=="Staff": self._rw=StaffWin(user,self._logout)
+        else:               self._rw=NurseWin(user,self._logout)
+        self._rw.show()
+
+    def _logout(self):
+        if self._rw: self._rw.close(); self._rw=None
+        self.un.clear(); self.pw.clear(); self.err.clear(); self.show()
+
+if __name__=="__main__":
+    init_db()
+    app=QApplication(sys.argv); app.setStyle("Fusion")
+    w=LoginWin(); w.show(); sys.exit(app.exec())
