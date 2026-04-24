@@ -51,7 +51,6 @@ DB_CONFIG = dict(
 )
 
 class SQLDBConnector:
-    """MySQL connector following the Activity 15 SQLDBConnector pattern."""
 
     def __init__(self, db="", username="", password="", host="", port=3306):
         self.db       = db
